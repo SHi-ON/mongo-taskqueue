@@ -110,8 +110,10 @@ class Task(MutableMapping):
 
     def __repr__(self):
         attrs_ = dict(self.__dict__)
-        attrs_['createdAt'] = datetime.datetime.fromtimestamp(
-            attrs_['createdAt'])
-        attrs_['modifiedAt'] = datetime.datetime.fromtimestamp(
-            attrs_['modifiedAt'])
+        created_at = attrs_.get('createdAt')
+        if isinstance(created_at, (int, float)):
+            attrs_['createdAt'] = datetime.datetime.fromtimestamp(created_at)
+        modified_at = attrs_.get('modifiedAt')
+        if isinstance(modified_at, (int, float)):
+            attrs_['modifiedAt'] = datetime.datetime.fromtimestamp(modified_at)
         return pprint.pformat(attrs_)

@@ -9,7 +9,8 @@ from typing import Any, Union, List, Dict, Iterable, Generator
 from pymongo import MongoClient, ASCENDING, DESCENDING
 from pymongo.collection import Collection, ReturnDocument
 from pymongo.database import Database
-from pymongo.results import InvalidOperation
+from pymongo.errors import InvalidOperation
+from pymongo.read_preferences import ReadPreference
 
 from mongotq.anomalies import NonPendingAssignedAnomaly
 from mongotq.task  import Task, STATUS_NEW, STATUS_PENDING, \
@@ -26,7 +27,7 @@ def get_mongo_client(mongo_host: Union[str, List[str]]) -> MongoClient:
     """
     return MongoClient(host=mongo_host,
                        tlsAllowInvalidCertificates=True,
-                       readPreference='secondaryPreferred')
+                       read_preference=ReadPreference.SECONDARY_PREFERRED)
 
 
 class TaskQueue:
@@ -71,6 +72,9 @@ class TaskQueue:
         self.tag = tag
         self.ttl = ttl
         self.max_retries = max_retries
+        discard_strategy = (discard_strategy or 'keep').lower()
+        if discard_strategy not in {'keep', 'remove'}:
+            raise ValueError('discard_strategy must be "keep" or "remove"')
         self.discard_strategy = discard_strategy
 
         self._mongo_client = None
@@ -151,8 +155,12 @@ class TaskQueue:
 
         :return:
         """
+        if self.discard_strategy == 'keep':
+            logging.info('discard strategy set to keep; skipping discard.')
+            return
         delete_result = self.collection.delete_many(
-            filter={'retries': {'$gte': self.max_retries}},
+            filter={'status': STATUS_FAILED,
+                    'retries': {'$gte': self.max_retries}},
         )
         if not delete_result.acknowledged:
             raise InvalidOperation
@@ -169,7 +177,7 @@ class TaskQueue:
         the underlying MongoDB collection, invoking low-level methods of the
         TaskQueue out of the defined lifecycle, or any unexpected behaviors
         occurred at the backend. Found tasks with anomalies are logged as
-        warnings and if `dy_run=False`, the necessary changes will be
+        warnings and if `dry_run=False`, the necessary changes will be
         committed to resolve the anomalies.
 
         :param dry_run: whether to resolve the found anomalies or just
@@ -245,7 +253,10 @@ class TaskQueue:
         return self._wrap_task(doc)
 
     def bulk_append(self, tasks: Iterable[Task], ordered=True):
-        insert_result = self.collection.insert_many(documents=tasks,
+        documents = list(tasks)
+        if not documents:
+            return
+        insert_result = self.collection.insert_many(documents=documents,
                                                     ordered=ordered)
         if not insert_result.acknowledged:
             raise InvalidOperation
@@ -259,9 +270,11 @@ class TaskQueue:
         :return:
         """
         task.modifiedAt = datetime.datetime.now().timestamp()
+        task_data = dict(task)
+        task_data.pop('_id', None)
         update_result = self.collection.update_one(
             filter={'_id': task.object_id_},
-            update={'$set': task},
+            update={'$set': task_data},
             upsert=True,
         )
         if not update_result.acknowledged:
@@ -290,28 +303,14 @@ class TaskQueue:
         return self._wrap_task(doc)
 
     def next_many(self, count: int = 0):
-        cur = self.collection.find(
-            filter={'assignedTo': None,
-                    'status': STATUS_NEW,
-                    'retries': {'$lt': self.max_retries}},
-            sort=[('priority', DESCENDING),
-                  ('createdAt', ASCENDING)],
-            limit=count
-        )
-        tasks = [self._wrap_task(c) for c in cur]
-        update_result = self.collection.update_many(
-            filter={'_id': {'$in': [t['_id'] for t in tasks]}},
-            update={'$set': {'assignedTo': self.assignment_tag,
-                             'modifiedAt': datetime.datetime.now().timestamp(),
-                             'status': STATUS_PENDING}},
-            upsert=False,
-        )
-        if not update_result.acknowledged:
-            raise InvalidOperation
-        if not update_result.matched_count:
-            logging.error('no tasks found to update')
-        if update_result.matched_count != len(tasks):
-            logging.error('not all tasks are updated!')
+        if count < 0:
+            raise ValueError('count must be >= 0')
+        tasks = []
+        while count == 0 or len(tasks) < count:
+            task = self.next()
+            if task is None:
+                break
+            tasks.append(task)
         return tasks
 
     def head(self, n: int = 10) -> None:
@@ -361,7 +360,9 @@ class TaskQueue:
         total = sum(stats.values())
         m_len = len(str(total))
         padding = m_len + m_len // 3
-        assert total == self.size()
+        collection_count = self.size()
+        if total != collection_count:
+            logging.warning('task counts changed during aggregation')
 
         print('Tasks status:')
         print(f'Status'.ljust(15), 'Count'.ljust(padding))
@@ -448,7 +449,9 @@ class TaskQueue:
         return self.collection.find_one_and_update(
             filter={'_id': task.object_id_,
                     'assignedTo': self.assignment_tag},
-            update={'$set': {'assignedTo': None, 'modifiedAt': None},
+            update={'$set': {'assignedTo': None,
+                             'modifiedAt': datetime.datetime.now().timestamp(),
+                             'status': STATUS_NEW},
                     '$inc': {'retries': 1}}
         )
 
