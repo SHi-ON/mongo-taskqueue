@@ -11,6 +11,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.test
+      args:
+        PYTHON_VERSION: ${PYTHON_VERSION:-3.13}
     depends_on:
       mongo:
         condition: service_healthy
