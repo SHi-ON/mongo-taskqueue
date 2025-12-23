@@ -15,6 +15,24 @@ class TestTaskQueueUnit(unittest.TestCase):
                 discard_strategy="invalid",
             )
 
+    def test_ttl_validation(self):
+        with self.assertRaises(ValueError):
+            TaskQueue(
+                database="db",
+                collection="col",
+                host="mongodb://localhost:27017",
+                ttl=-2,
+            )
+
+    def test_max_retries_validation(self):
+        with self.assertRaises(ValueError):
+            TaskQueue(
+                database="db",
+                collection="col",
+                host="mongodb://localhost:27017",
+                max_retries=-1,
+            )
+
     def test_next_many_negative_count(self):
         queue = TaskQueue(
             database="db",

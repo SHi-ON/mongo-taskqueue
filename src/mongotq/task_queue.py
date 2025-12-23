@@ -4,7 +4,7 @@ import os
 from collections.abc import Mapping, MutableMapping
 from functools import cached_property
 from pprint import pprint
-from typing import Any, Union, List, Dict, Iterable, Generator
+from typing import Any, Dict, Iterable, Generator, List, Optional, Union
 
 from pymongo import MongoClient, ASCENDING, DESCENDING
 from pymongo.collection import Collection, ReturnDocument
@@ -17,7 +17,9 @@ from mongotq.task  import Task, STATUS_NEW, STATUS_PENDING, \
                    STATUS_FAILED, STATUS_SUCCESSFUL
 
 
-def get_mongo_client(mongo_host: Union[str, List[str]]) -> MongoClient:
+def get_mongo_client(mongo_host: Union[str, List[str]],
+                     client_options: Optional[Dict[str, Any]] = None
+                     ) -> MongoClient:
     """
     Returns a MongoDB client instance.
 
@@ -25,9 +27,13 @@ def get_mongo_client(mongo_host: Union[str, List[str]]) -> MongoClient:
                        Multiple hosts can be provided as a list.
     :return: the MongoDB client instance
     """
-    return MongoClient(host=mongo_host,
-                       tlsAllowInvalidCertificates=True,
-                       read_preference=ReadPreference.SECONDARY_PREFERRED)
+    options: Dict[str, Any] = {
+        'tlsAllowInvalidCertificates': True,
+        'read_preference': ReadPreference.SECONDARY_PREFERRED,
+    }
+    if client_options:
+        options.update(client_options)
+    return MongoClient(host=mongo_host, **options)
 
 
 class TaskQueue:
@@ -42,6 +48,7 @@ class TaskQueue:
             ttl: int = -1,
             max_retries: int = 3,
             discard_strategy: str = 'keep',
+            client_options: Optional[Dict[str, Any]] = None,
     ):
         """
         Instantiates a TaskQueue object using the provided MongoDB collection.
@@ -65,17 +72,24 @@ class TaskQueue:
                                  which has reached the `self.max_retries`
                                  times of failure. The default strategy is
                                  to keep discarded tasks in the TaskQueue.
+        :param client_options: extra keyword arguments to pass to MongoClient.
         """
         self.database_name = database
         self.collection_name = collection
         self.host = host
         self.tag = tag
+        if ttl < -1:
+            raise ValueError('ttl must be -1 or >= 0')
+        if max_retries < 0:
+            raise ValueError('max_retries must be >= 0')
+
         self.ttl = ttl
         self.max_retries = max_retries
         discard_strategy = (discard_strategy or 'keep').lower()
         if discard_strategy not in {'keep', 'remove'}:
             raise ValueError('discard_strategy must be "keep" or "remove"')
         self.discard_strategy = discard_strategy
+        self.client_options = client_options or {}
 
         self._mongo_client = None
 
@@ -89,7 +103,10 @@ class TaskQueue:
         :return: MongoDB client instance
         """
         if self._mongo_client is None:
-            self._mongo_client = get_mongo_client(self.host)
+            self._mongo_client = get_mongo_client(
+                self.host,
+                client_options=self.client_options,
+            )
         return self._mongo_client
 
     @cached_property
@@ -501,3 +518,21 @@ class TaskQueue:
         )
         if not delete_result.acknowledged:
             raise InvalidOperation
+
+    def append_many(self, payloads: Iterable[Any], priority: int = 0) -> None:
+        tasks = [Task(priority=priority, payload=payload) for payload in payloads]
+        self.bulk_append(tasks)
+
+    def close(self) -> None:
+        if self._mongo_client is None:
+            return
+        self._mongo_client.close()
+        self._mongo_client = None
+        self.__dict__.pop('database', None)
+        self.__dict__.pop('collection', None)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
