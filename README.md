@@ -84,3 +84,16 @@ The easiest way to install Mongo-TaskQueue is using `uv`:
 ```shell
 uv pip install mongo-taskqueue
 ```
+
+## Testing (Docker)
+Run unit and integration tests against a local MongoDB container:
+```shell
+docker compose up --build --abort-on-container-exit --exit-code-from tests
+```
+
+Clean up containers and volumes:
+```shell
+docker compose down -v
+```
+
+Integration tests are skipped unless `MONGO_URI` is set.
