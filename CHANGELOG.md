@@ -5,6 +5,9 @@ All notable changes to this project are documented in this file.
 ## Unreleased
 - TBD
 
+## 0.2.7
+- Fixed license metadata for setuptools/CI builds.
+
 ## 0.2.6
 - Added CLI for common queue operations.
 - Added context manager support and client options.
