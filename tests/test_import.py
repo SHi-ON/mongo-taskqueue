@@ -1,4 +1,8 @@
+import os
 import unittest
+
+if os.getenv("GITHUB_ACTIONS") != "true":
+    raise unittest.SkipTest("Tests run in GitHub Actions only.")
 
 
 class TestImport(unittest.TestCase):

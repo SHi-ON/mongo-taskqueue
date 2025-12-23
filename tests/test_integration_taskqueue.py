@@ -12,6 +12,9 @@ from mongotq import (
     get_task_queue,
 )
 
+if os.getenv("GITHUB_ACTIONS") != "true":
+    raise unittest.SkipTest("Tests run in GitHub Actions only.")
+
 MONGO_URI = os.getenv("MONGO_URI")
 MONGO_DATABASE = os.getenv("MONGO_DATABASE", "mongotq_test")
 MONGO_COLLECTION = os.getenv("MONGO_COLLECTION", "taskqueue")

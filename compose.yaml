@@ -20,6 +20,7 @@ services:
       MONGO_URI: mongodb://mongo:27017
       MONGO_DATABASE: mongotq_test
       MONGO_COLLECTION: taskqueue
+      GITHUB_ACTIONS: ${GITHUB_ACTIONS:-}
     working_dir: /app
     volumes:
       - .:/app
