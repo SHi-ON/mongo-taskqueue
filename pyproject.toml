@@ -9,7 +9,7 @@ description = 'Queueing data structure on top of a MongoDB collection'
 readme = 'README.md'
 license = { text = 'MIT' }
 maintainers = [
-    { name = 'Shawn Azdam', email = 'shawn@talonhealthtech.com' }
+    { name = 'Shawn Azdam', email = 'shawn@azdam.com' }
 ]
 keywords = ['mongo', 'mongodb', 'queue', 'task', 'taskqueue']
 classifiers = [
