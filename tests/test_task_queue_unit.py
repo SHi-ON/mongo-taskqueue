@@ -1,8 +1,12 @@
 import datetime
+import os
 import unittest
 
 from mongotq import Task
 from mongotq.task_queue import TaskQueue
+
+if os.getenv("GITHUB_ACTIONS") != "true":
+    raise unittest.SkipTest("Tests run in GitHub Actions only.")
 
 
 class TestTaskQueueUnit(unittest.TestCase):

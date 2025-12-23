@@ -109,22 +109,12 @@ Examples are available in `examples/producer.py` and `examples/worker.py`.
 - `discard_strategy` can be `keep` or `remove`.
 - `client_options` may be passed to `get_task_queue` to configure `MongoClient`.
 
-## Testing (Docker)
-Run unit and integration tests against a local MongoDB container:
-```shell
-docker compose up --build --abort-on-container-exit --exit-code-from tests
-```
-
-Clean up containers and volumes:
-```shell
-docker compose down -v
-```
-
-Integration tests are skipped unless `MONGO_URI` is set.
+## Testing (CI only)
+Tests are designed to run only in GitHub Actions. Local test runs are skipped.
 
 ## GitHub Actions
-All tests run in GitHub Actions via Docker Compose. No local test setup is
-required for CI.
+All tests run in GitHub Actions via Docker Compose. Lint, type checks, and
+package validation also run in CI.
 
 ## Release
 Tag a release as `vX.Y.Z` to trigger the publish workflow. The workflow uses
