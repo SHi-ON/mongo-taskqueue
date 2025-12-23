@@ -1,7 +1,6 @@
 #!/bin/bash
+set -euo pipefail
 
-source .venv/bin/activate
-
-rm dist/*
-python -m build
-twine upload -u SHi-ON dist/*
+rm -rf dist
+uv build
+uv publish -u SHi-ON dist/*
