@@ -6,5 +6,8 @@ __pycache__/
 dist/
 build/
 src/mongo_taskqueue.egg-info/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
 
 .DS_Store

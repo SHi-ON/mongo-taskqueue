@@ -85,6 +85,30 @@ The easiest way to install Mongo-TaskQueue is using `uv`:
 uv pip install mongo-taskqueue
 ```
 
+## CLI
+Use the `mongotq` CLI to inspect or update a queue:
+```shell
+mongotq --host mongodb://localhost:27017 --database mydb --collection myqueue size
+mongotq --host mongodb://localhost:27017 --database mydb --collection myqueue append '{"job": "hello"}'
+mongotq --host mongodb://localhost:27017 --database mydb --collection myqueue next
+```
+
+Environment variables:
+- `MONGOTQ_HOST` or `MONGO_URI`
+- `MONGOTQ_DATABASE`
+- `MONGOTQ_COLLECTION`
+- `MONGOTQ_TTL`
+- `MONGOTQ_TAG`
+
+Examples are available in `examples/producer.py` and `examples/worker.py`.
+
+## Runtime behavior
+- `ttl` controls how long a task may remain in `pending` state before it is
+  released and marked as `failed`.
+- `max_retries` caps how many failed attempts a task can have.
+- `discard_strategy` can be `keep` or `remove`.
+- `client_options` may be passed to `get_task_queue` to configure `MongoClient`.
+
 ## Testing (Docker)
 Run unit and integration tests against a local MongoDB container:
 ```shell
@@ -97,3 +121,11 @@ docker compose down -v
 ```
 
 Integration tests are skipped unless `MONGO_URI` is set.
+
+## GitHub Actions
+All tests run in GitHub Actions via Docker Compose. No local test setup is
+required for CI.
+
+## Release
+Tag a release as `vX.Y.Z` to trigger the publish workflow. The workflow uses
+`PYPI_TOKEN` from GitHub Secrets.

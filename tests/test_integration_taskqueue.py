@@ -131,6 +131,10 @@ class TestTaskQueueIntegration(unittest.TestCase):
         self.queue.bulk_append(tasks)
         self.assertEqual(self.queue.size(), 3)
 
+    def test_append_many_inserts(self):
+        self.queue.append_many([{ "job": "a" }, { "job": "b" }], priority=1)
+        self.assertEqual(self.queue.size(), 2)
+
     def test_next_many_zero_returns_all(self):
         for i in range(3):
             self.queue.append({"job": i})
