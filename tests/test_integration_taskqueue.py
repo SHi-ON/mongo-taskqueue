@@ -89,6 +89,55 @@ class TestTaskQueueIntegration(unittest.TestCase):
         self.assertEqual(queue.collection.count_documents({}), 0)
         queue.database.drop_collection(queue.collection_name)
 
+    def test_discard_strategy_keep(self):
+        queue = TaskQueue(
+            database=MONGO_DATABASE,
+            collection=f"{self.queue.collection_name}_keep",
+            host=MONGO_URI,
+            ttl=-1,
+            max_retries=1,
+            discard_strategy="keep",
+        )
+        failed = Task(status=STATUS_FAILED, retries=2, payload={"job": "keep"})
+        queue.collection.insert_one(failed)
+
+        queue.refresh()
+        self.assertEqual(queue.collection.count_documents({}), 1)
+        queue.database.drop_collection(queue.collection_name)
+
+    def test_resolve_anomalies_fix(self):
+        now = datetime.datetime.now().timestamp()
+        task = Task(
+            assignedTo="worker",
+            status=STATUS_SUCCESSFUL,
+            modifiedAt=now - 5,
+            payload={"job": "anomaly"},
+        )
+        self.queue.collection.insert_one(task)
+
+        self.queue.resolve_anomalies(dry_run=False)
+        doc = self.queue.collection.find_one({"_id": task._id})
+        self.assertIsNotNone(doc)
+        self.assertIsNone(doc["assignedTo"])
+        self.assertEqual(doc["status"], STATUS_FAILED)
+        self.assertEqual(doc["retries"], 1)
+
+    def test_bulk_append_empty(self):
+        self.queue.bulk_append([])
+        self.assertEqual(self.queue.size(), 0)
+
+    def test_bulk_append_inserts(self):
+        tasks = [Task(payload={"job": i}) for i in range(3)]
+        self.queue.bulk_append(tasks)
+        self.assertEqual(self.queue.size(), 3)
+
+    def test_next_many_zero_returns_all(self):
+        for i in range(3):
+            self.queue.append({"job": i})
+
+        tasks = self.queue.next_many(0)
+        self.assertEqual(len(tasks), 3)
+
     def test_next_many_assigns(self):
         for i in range(3):
             self.queue.append({"job": i})
