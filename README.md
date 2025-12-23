@@ -1,5 +1,5 @@
 # Mongo TaskQueue
-[![Python 3.6](https://img.shields.io/badge/python-3.8%20%7C%203.9%20%7C%203.10%20%7C%203.11-blue.svg)](https://pypi.org/project/mongo-taskqueue)
+[![Python 3.9](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://pypi.org/project/mongo-taskqueue)
 [![PyPI version](https://badge.fury.io/py/mongo-taskqueue.svg)](https://badge.fury.io/py/mongo-taskqueue)
 ![MongoDB](https://img.shields.io/badge/MongoDB-%234ea94b.svg?style=flat&logo=mongodb&logoColor=white)
 
@@ -80,7 +80,7 @@ Then you can simply check the tail of your queue:
 
 ## Installation
 The only dependency is [pyMongo](https://pymongo.readthedocs.io/en/stable/).
-The easiest way to install Mongo-TaskQueue is using `pip`:
+The easiest way to install Mongo-TaskQueue is using `uv`:
 ```shell
-pip install mongo-taskqueue
+uv pip install mongo-taskqueue
 ```
