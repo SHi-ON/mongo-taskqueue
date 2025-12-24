@@ -91,6 +91,9 @@ Use the `mongotq` CLI to inspect or update a queue:
 mongotq --host mongodb://localhost:27017 --database mydb --collection myqueue size
 mongotq --host mongodb://localhost:27017 --database mydb --collection myqueue append '{"job": "hello"}'
 mongotq --host mongodb://localhost:27017 --database mydb --collection myqueue next
+mongotq --host mongodb://localhost:27017 --database mydb --collection myqueue append '{"job": "later"}' --delay-seconds 30
+mongotq --host mongodb://localhost:27017 --database mydb --collection myqueue requeue-failed --delay-seconds 10
+mongotq --host mongodb://localhost:27017 --database mydb --collection myqueue dead-letter-count
 ```
 
 Environment variables:
@@ -105,9 +108,37 @@ Examples are available in `examples/producer.py` and `examples/worker.py`.
 ## Runtime behavior
 - `ttl` controls how long a task may remain in `pending` state before it is
   released and marked as `failed`.
+- `visibility_timeout` controls how long a task lease lasts before it is
+  requeued for another worker.
+- `retry_backoff_base` and `retry_backoff_max` control exponential backoff when
+  `on_failure` is called.
 - `max_retries` caps how many failed attempts a task can have.
 - `discard_strategy` can be `keep` or `remove`.
 - `client_options` may be passed to `get_task_queue` to configure `MongoClient`.
+- `dead_letter_collection` moves discarded tasks into another collection.
+- `rate_limit_per_second` limits dequeue frequency (global and per-key).
+  Rate limiting uses a companion metadata collection.
+
+## Idempotent enqueue
+Use `dedupe_key` with `append` to avoid duplicate tasks:
+```python
+task_queue.append({"job": 1}, dedupe_key="job-1")
+```
+
+## Delayed tasks
+Schedule a task for later execution:
+```python
+task_queue.append({"job": "later"}, delay_seconds=30)
+```
+
+## Async usage
+Install the async extra and use `AsyncTaskQueue`:
+```shell
+uv pip install "mongo-taskqueue[async]"
+```
+```python
+from mongotq import AsyncTaskQueue
+```
 
 ## Testing (CI only)
 Tests are designed to run only in GitHub Actions. Local test runs are skipped.

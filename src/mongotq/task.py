@@ -24,11 +24,16 @@ class Task(MutableMapping):
                  assignedTo: str = None,
                  createdAt: float = None,
                  modifiedAt: float = None,
+                 scheduledAt: float = None,
+                 leaseId: str = None,
+                 leaseExpiresAt: float = None,
                  status: str = None,
                  errorMessage: str = None,
                  retries: int = 0,
                  priority: int = 0,
-                 payload: Any = None):
+                 payload: Any = None,
+                 dedupeKey: str = None,
+                 rateLimitKey: str = None):
         """
         Instantiates a Task instance.
 
@@ -36,6 +41,9 @@ class Task(MutableMapping):
         :param assignedTo: the consumer assigned to the Task
         :param createdAt: the timestamp when the Task object was first created
         :param modifiedAt: the timestamp of the most recent change to the Task
+        :param scheduledAt: earliest timestamp that a Task can be leased
+        :param leaseId: lease identifier for the current Task assignment
+        :param leaseExpiresAt: timestamp when the lease expires
         :param status: the Task status. It can take values from the following
                        list: ['new', 'pending', 'failed', 'successful']
         :param errorMessage: last error message occurred while
@@ -45,17 +53,24 @@ class Task(MutableMapping):
                          from the TaskQueue
         :param payload: data payload which can be used to store data
                         with the Task
+        :param dedupeKey: optional idempotency key for avoiding duplicates
+        :param rateLimitKey: optional key for rate-limited consumption
         """
         datetime_now = datetime.datetime.now()
         self._id = _id or ObjectId()
         self.assignedTo = assignedTo
         self.createdAt = createdAt or datetime_now.timestamp()
         self.modifiedAt = modifiedAt or datetime_now.timestamp()
+        self.scheduledAt = scheduledAt
+        self.leaseId = leaseId
+        self.leaseExpiresAt = leaseExpiresAt
         self.status = status or STATUS_NEW
         self.retries = retries
         self.errorMessage = errorMessage
         self.priority = priority
         self.payload = payload
+        self.dedupeKey = dedupeKey
+        self.rateLimitKey = rateLimitKey
 
     @property
     def object_id_(self):
@@ -72,6 +87,18 @@ class Task(MutableMapping):
     @property
     def modified_at_(self):
         return self.modifiedAt
+
+    @property
+    def scheduled_at_(self):
+        return self.scheduledAt
+
+    @property
+    def lease_id_(self):
+        return self.leaseId
+
+    @property
+    def lease_expires_at_(self):
+        return self.leaseExpiresAt
 
     @property
     def status_(self):
@@ -92,6 +119,14 @@ class Task(MutableMapping):
     @property
     def payload_(self):
         return self.payload
+
+    @property
+    def dedupe_key_(self):
+        return self.dedupeKey
+
+    @property
+    def rate_limit_key_(self):
+        return self.rateLimitKey
 
     def __setitem__(self, key, value) -> None:
         self.__setattr__(key, value)
@@ -116,4 +151,12 @@ class Task(MutableMapping):
         modified_at = attrs_.get('modifiedAt')
         if isinstance(modified_at, (int, float)):
             attrs_['modifiedAt'] = datetime.datetime.fromtimestamp(modified_at)
+        scheduled_at = attrs_.get('scheduledAt')
+        if isinstance(scheduled_at, (int, float)):
+            attrs_['scheduledAt'] = datetime.datetime.fromtimestamp(scheduled_at)
+        lease_expires_at = attrs_.get('leaseExpiresAt')
+        if isinstance(lease_expires_at, (int, float)):
+            attrs_['leaseExpiresAt'] = datetime.datetime.fromtimestamp(
+                lease_expires_at
+            )
         return pprint.pformat(attrs_)

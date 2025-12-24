@@ -138,6 +138,137 @@ class TestTaskQueueIntegration(unittest.TestCase):
         self.queue.append_many([{ "job": "a" }, { "job": "b" }], priority=1)
         self.assertEqual(self.queue.size(), 2)
 
+    def test_delayed_task(self):
+        now = datetime.datetime.now().timestamp()
+        scheduled_at = now + 60
+        self.queue.append({"job": "delayed"}, scheduled_at=scheduled_at)
+        self.assertIsNone(self.queue.next())
+        self.queue.collection.update_one(
+            {"payload.job": "delayed"},
+            {"$set": {"scheduledAt": now - 1}},
+        )
+        task = self.queue.next()
+        self.assertIsNotNone(task)
+
+    def test_dedupe_key(self):
+        inserted = self.queue.append({"job": "dedupe"}, dedupe_key="job-1")
+        self.assertTrue(inserted)
+        inserted = self.queue.append({"job": "dedupe"}, dedupe_key="job-1")
+        self.assertFalse(inserted)
+        count = self.queue.collection.count_documents({"dedupeKey": "job-1"})
+        self.assertEqual(count, 1)
+
+    def test_visibility_timeout_requeues(self):
+        queue = get_task_queue(
+            database_name=MONGO_DATABASE,
+            collection_name=f"{self.queue.collection_name}_lease",
+            host=MONGO_URI,
+            ttl=-1,
+            visibility_timeout=1,
+        )
+        task = Task(
+            assignedTo="worker",
+            status=STATUS_PENDING,
+            leaseExpiresAt=datetime.datetime.now().timestamp() - 10,
+            payload={"job": "lease"},
+        )
+        queue.collection.insert_one(task)
+        queue.refresh()
+        doc = queue.collection.find_one({"_id": task._id})
+        self.assertEqual(doc["status"], STATUS_NEW)
+        self.assertIsNone(doc["assignedTo"])
+        queue.database.drop_collection(queue.collection_name)
+
+    def test_heartbeat_extends_lease(self):
+        queue = get_task_queue(
+            database_name=MONGO_DATABASE,
+            collection_name=f"{self.queue.collection_name}_heartbeat",
+            host=MONGO_URI,
+            ttl=-1,
+            visibility_timeout=5,
+        )
+        now = datetime.datetime.now().timestamp()
+        task = Task(
+            assignedTo=queue.assignment_tag,
+            status=STATUS_PENDING,
+            leaseExpiresAt=now + 1,
+            payload={"job": "heartbeat"},
+        )
+        queue.collection.insert_one(task)
+        updated = queue.heartbeat(task, extend_by=10)
+        self.assertIsNotNone(updated)
+        self.assertGreater(updated.leaseExpiresAt, now + 1)
+        queue.database.drop_collection(queue.collection_name)
+
+    def test_backoff_on_failure(self):
+        queue = get_task_queue(
+            database_name=MONGO_DATABASE,
+            collection_name=f"{self.queue.collection_name}_backoff",
+            host=MONGO_URI,
+            ttl=-1,
+            retry_backoff_base=2,
+            retry_backoff_max=10,
+        )
+        queue.append({"job": "backoff"})
+        task = queue.next()
+        self.assertIsNotNone(task)
+        queue.on_failure(task, error_message="fail")
+        doc = queue.collection.find_one({"_id": task._id})
+        self.assertEqual(doc["status"], STATUS_NEW)
+        self.assertIsNotNone(doc["scheduledAt"])
+        queue.database.drop_collection(queue.collection_name)
+
+    def test_dead_letter_collection(self):
+        queue = get_task_queue(
+            database_name=MONGO_DATABASE,
+            collection_name=f"{self.queue.collection_name}_dead",
+            host=MONGO_URI,
+            ttl=-1,
+            max_retries=1,
+            discard_strategy="remove",
+            dead_letter_collection=f"{self.queue.collection_name}_dead_letters",
+        )
+        failed = Task(status=STATUS_FAILED, retries=1, payload={"job": "dead"})
+        queue.collection.insert_one(failed)
+        queue.refresh()
+        self.assertEqual(queue.collection.count_documents({}), 0)
+        self.assertEqual(queue.dead_letter_collection.count_documents({}), 1)
+        queue.database.drop_collection(queue.collection_name)
+        queue.database.drop_collection(queue.dead_letter_collection_name)
+
+    def test_rate_limit_global(self):
+        queue = get_task_queue(
+            database_name=MONGO_DATABASE,
+            collection_name=f"{self.queue.collection_name}_rate",
+            host=MONGO_URI,
+            ttl=-1,
+            rate_limit_per_second=0.5,
+        )
+        queue.append({"job": "rate-1"})
+        queue.append({"job": "rate-2"})
+        task = queue.next()
+        self.assertIsNotNone(task)
+        self.assertIsNone(queue.next())
+        queue.database.drop_collection(queue.collection_name)
+
+    def test_rate_limit_key(self):
+        queue = get_task_queue(
+            database_name=MONGO_DATABASE,
+            collection_name=f"{self.queue.collection_name}_ratekey",
+            host=MONGO_URI,
+            ttl=-1,
+            rate_limit_per_second=0.5,
+        )
+        queue.append({"job": "rate-key-1"}, rate_limit_key="alpha")
+        queue.append({"job": "rate-key-2"}, rate_limit_key="alpha")
+        task = queue.next()
+        self.assertIsNotNone(task)
+        self.assertIsNone(queue.next())
+        doc = queue.collection.find_one({"payload.job": "rate-key-2"})
+        self.assertIsNotNone(doc)
+        self.assertIsNotNone(doc.get("scheduledAt"))
+        queue.database.drop_collection(queue.collection_name)
+
     def test_next_many_zero_returns_all(self):
         for i in range(3):
             self.queue.append({"job": i})

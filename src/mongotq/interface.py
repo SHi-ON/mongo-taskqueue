@@ -12,7 +12,13 @@ def get_task_queue(database_name: str,
                    max_retries: int = 3,
                    discard_strategy: str = 'keep',
                    client_options: Optional[Dict[str, Any]] = None,
-                   ensure_indexes: bool = True) -> TaskQueue:
+                   ensure_indexes: bool = True,
+                   visibility_timeout: int = 0,
+                   retry_backoff_base: int = 0,
+                   retry_backoff_max: int = 0,
+                   dead_letter_collection: Optional[str] = None,
+                   meta_collection: Optional[str] = None,
+                   rate_limit_per_second: Optional[float] = None) -> TaskQueue:
     """
     Returns a TaskQueue instance for the given collection name.
     If the TaskQueue collection does not exist, a new MongoDB collection
@@ -23,6 +29,12 @@ def get_task_queue(database_name: str,
     :param discard_strategy: whether to "keep" or to "remove" discarded tasks.
     :param client_options: MongoClient keyword arguments.
     :param ensure_indexes: whether to create indexes if missing.
+    :param visibility_timeout: lease duration in seconds for pending tasks.
+    :param retry_backoff_base: base delay in seconds for retry backoff.
+    :param retry_backoff_max: maximum delay in seconds for retry backoff.
+    :param dead_letter_collection: collection name for dead-letter tasks.
+    :param meta_collection: collection name for rate limit metadata.
+    :param rate_limit_per_second: global dequeue rate limit.
     :return: a TaskQueue instance
     """
     queue = TaskQueue(
@@ -34,6 +46,12 @@ def get_task_queue(database_name: str,
         max_retries=max_retries,
         discard_strategy=discard_strategy,
         client_options=client_options,
+        visibility_timeout=visibility_timeout,
+        retry_backoff_base=retry_backoff_base,
+        retry_backoff_max=retry_backoff_max,
+        dead_letter_collection=dead_letter_collection,
+        meta_collection=meta_collection,
+        rate_limit_per_second=rate_limit_per_second,
     )
     collection_names = queue.database.list_collection_names()
     # Creates a new collection and an index

@@ -37,6 +37,24 @@ class TestTaskQueueUnit(unittest.TestCase):
                 max_retries=-1,
             )
 
+    def test_visibility_timeout_validation(self):
+        with self.assertRaises(ValueError):
+            TaskQueue(
+                database="db",
+                collection="col",
+                host="mongodb://localhost:27017",
+                visibility_timeout=-1,
+            )
+
+    def test_rate_limit_validation(self):
+        with self.assertRaises(ValueError):
+            TaskQueue(
+                database="db",
+                collection="col",
+                host="mongodb://localhost:27017",
+                rate_limit_per_second=0,
+            )
+
     def test_next_many_negative_count(self):
         queue = TaskQueue(
             database="db",
@@ -50,6 +68,18 @@ class TestTaskQueueUnit(unittest.TestCase):
         now = datetime.datetime.now()
         task = Task(createdAt=now, modifiedAt=now)
         repr(task)
+
+    def test_backoff_computation(self):
+        queue = TaskQueue(
+            database="db",
+            collection="col",
+            host="mongodb://localhost:27017",
+            retry_backoff_base=2,
+            retry_backoff_max=5,
+        )
+        self.assertEqual(queue._compute_backoff(1), 2.0)
+        self.assertEqual(queue._compute_backoff(2), 4.0)
+        self.assertEqual(queue._compute_backoff(3), 5.0)
 
 
 if __name__ == "__main__":

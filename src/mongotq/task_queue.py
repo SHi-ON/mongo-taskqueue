@@ -1,6 +1,8 @@
 import datetime
 import logging
 import os
+import time
+import uuid
 from collections.abc import Mapping, MutableMapping
 from functools import cached_property
 from pprint import pprint
@@ -9,7 +11,7 @@ from typing import Any, Dict, Iterable, Generator, List, Optional, Union
 from pymongo import MongoClient, ASCENDING, DESCENDING
 from pymongo.collection import Collection, ReturnDocument
 from pymongo.database import Database
-from pymongo.errors import InvalidOperation
+from pymongo.errors import DuplicateKeyError, InvalidOperation
 from pymongo.read_preferences import ReadPreference
 
 from mongotq.anomalies import NonPendingAssignedAnomaly
@@ -49,6 +51,12 @@ class TaskQueue:
             max_retries: int = 3,
             discard_strategy: str = 'keep',
             client_options: Optional[Dict[str, Any]] = None,
+            visibility_timeout: int = 0,
+            retry_backoff_base: int = 0,
+            retry_backoff_max: int = 0,
+            dead_letter_collection: Optional[str] = None,
+            meta_collection: Optional[str] = None,
+            rate_limit_per_second: Optional[float] = None,
     ):
         """
         Instantiates a TaskQueue object using the provided MongoDB collection.
@@ -73,6 +81,12 @@ class TaskQueue:
                                  times of failure. The default strategy is
                                  to keep discarded tasks in the TaskQueue.
         :param client_options: extra keyword arguments to pass to MongoClient.
+        :param visibility_timeout: lease duration in seconds for pending tasks.
+        :param retry_backoff_base: base delay in seconds for retry backoff.
+        :param retry_backoff_max: maximum delay in seconds for retry backoff.
+        :param dead_letter_collection: collection name for dead-letter tasks.
+        :param meta_collection: collection name for rate limit metadata.
+        :param rate_limit_per_second: global dequeue rate limit.
         """
         self.database_name = database
         self.collection_name = collection
@@ -82,6 +96,14 @@ class TaskQueue:
             raise ValueError('ttl must be -1 or >= 0')
         if max_retries < 0:
             raise ValueError('max_retries must be >= 0')
+        if visibility_timeout < 0:
+            raise ValueError('visibility_timeout must be >= 0')
+        if retry_backoff_base < 0:
+            raise ValueError('retry_backoff_base must be >= 0')
+        if retry_backoff_max < 0:
+            raise ValueError('retry_backoff_max must be >= 0')
+        if rate_limit_per_second is not None and rate_limit_per_second <= 0:
+            raise ValueError('rate_limit_per_second must be > 0')
 
         self.ttl = ttl
         self.max_retries = max_retries
@@ -90,6 +112,12 @@ class TaskQueue:
             raise ValueError('discard_strategy must be "keep" or "remove"')
         self.discard_strategy = discard_strategy
         self.client_options = client_options or {}
+        self.visibility_timeout = visibility_timeout
+        self.retry_backoff_base = retry_backoff_base
+        self.retry_backoff_max = retry_backoff_max
+        self.dead_letter_collection_name = dead_letter_collection
+        self.meta_collection_name = meta_collection or f'{collection}_meta'
+        self.rate_limit_per_second = rate_limit_per_second
 
         self._mongo_client = None
 
@@ -119,12 +147,69 @@ class TaskQueue:
         return self.database.get_collection(self.collection_name)
 
     @cached_property
+    def meta_collection(self) -> Collection:
+        return self.database.get_collection(self.meta_collection_name)
+
+    @cached_property
+    def dead_letter_collection(self) -> Optional[Collection]:
+        if not self.dead_letter_collection_name:
+            return None
+        return self.database.get_collection(self.dead_letter_collection_name)
+
+    @cached_property
     def assignment_tag(self) -> str:
         return self.tag or f'consumer_{os.getpid()}'
 
     @cached_property
     def expires(self) -> bool:
         return self.ttl != -1
+
+    @staticmethod
+    def _now_timestamp() -> float:
+        return datetime.datetime.now().timestamp()
+
+    def _compute_backoff(self, retries: int) -> float:
+        if self.retry_backoff_base <= 0:
+            return 0.0
+        delay = self.retry_backoff_base * (2 ** max(retries - 1, 0))
+        if self.retry_backoff_max:
+            delay = min(delay, self.retry_backoff_max)
+        return float(delay)
+
+    def _release_task(self, task: Task, delay_seconds: float = 0.0) -> None:
+        scheduled_at = None
+        if delay_seconds:
+            scheduled_at = self._now_timestamp() + delay_seconds
+        update_result = self.collection.update_one(
+            filter={'_id': task.object_id_,
+                    'assignedTo': self.assignment_tag,
+                    'status': STATUS_PENDING},
+            update={'$set': {'assignedTo': None,
+                             'leaseId': None,
+                             'leaseExpiresAt': None,
+                             'scheduledAt': scheduled_at,
+                             'modifiedAt': self._now_timestamp(),
+                             'status': STATUS_NEW}},
+        )
+        if not update_result.acknowledged:
+            raise InvalidOperation
+
+    def _acquire_rate_limit(self, key: Optional[str] = None) -> bool:
+        if self.rate_limit_per_second is None:
+            return True
+        interval = 1.0 / self.rate_limit_per_second
+        now = time.time()
+        meta_id = 'rate_limit' if key is None else f'rate_limit:{key}'
+        doc = self.meta_collection.find_one({'_id': meta_id})
+        last = doc.get('lastDequeuedAt') if doc else None
+        if last is not None and last > now - interval:
+            return False
+        self.meta_collection.update_one(
+            {'_id': meta_id},
+            {'$set': {'lastDequeuedAt': now}},
+            upsert=True,
+        )
+        return True
 
     def size(self) -> int:
         """
@@ -152,6 +237,8 @@ class TaskQueue:
                         'modifiedAt': {'$lt': ttl_ago.timestamp()},
                         'status': {'$eq': STATUS_PENDING}},
                 update={'$set': {'assignedTo': None,
+                                 'leaseId': None,
+                                 'leaseExpiresAt': None,
                                  'modifiedAt': now.timestamp(),
                                  'status': STATUS_FAILED},
                         '$inc': {'retries': 1}},
@@ -164,6 +251,30 @@ class TaskQueue:
                 logging.info(f'updated {update_result.modified_count} out of '
                              f'{update_result.matched_count} expired task(s).')
 
+    def _requeue_expired_leases(self) -> None:
+        if self.visibility_timeout <= 0:
+            return
+        now = self._now_timestamp()
+        update_result = self.collection.update_many(
+            filter={'assignedTo': {'$ne': None},
+                    'leaseExpiresAt': {'$lt': now},
+                    'status': {'$eq': STATUS_PENDING}},
+            update={'$set': {'assignedTo': None,
+                             'leaseId': None,
+                             'leaseExpiresAt': None,
+                             'scheduledAt': None,
+                             'modifiedAt': now,
+                             'status': STATUS_NEW},
+                    '$inc': {'retries': 1}},
+        )
+        if not update_result.acknowledged:
+            raise InvalidOperation
+        if not update_result.matched_count:
+            logging.info('no expired leases found')
+        else:
+            logging.info(f'requeued {update_result.modified_count} out of '
+                         f'{update_result.matched_count} expired leases.')
+
     def _discard_tasks(self) -> None:
         """
         Deletes the failed tasks which has reached (or exceeded) the
@@ -175,16 +286,32 @@ class TaskQueue:
         if self.discard_strategy == 'keep':
             logging.info('discard strategy set to keep; skipping discard.')
             return
-        delete_result = self.collection.delete_many(
-            filter={'status': STATUS_FAILED,
-                    'retries': {'$gte': self.max_retries}},
-        )
+        filter_predicate = {'status': STATUS_FAILED,
+                            'retries': {'$gte': self.max_retries}}
+        if self.dead_letter_collection is not None:
+            docs = list(self.collection.find(filter_predicate))
+            if not docs:
+                logging.info('no discardable tasks found')
+                return
+            timestamp = self._now_timestamp()
+            for doc in docs:
+                doc['discardedAt'] = timestamp
+            insert_result = self.dead_letter_collection.insert_many(docs)
+            if not insert_result.acknowledged:
+                raise InvalidOperation
+            delete_result = self.collection.delete_many(
+                {'_id': {'$in': [doc['_id'] for doc in docs]}},
+            )
+        else:
+            delete_result = self.collection.delete_many(
+                filter=filter_predicate,
+            )
         if not delete_result.acknowledged:
             raise InvalidOperation
         if not delete_result.deleted_count:
             logging.info('no discardable tasks found')
         else:
-            logging.info(f'deleted {delete_result.deleted_count} '
+            logging.info(f'discarded {delete_result.deleted_count} '
                          'failed task(s).')
 
     def resolve_anomalies(self, dry_run: bool = True) -> None:
@@ -238,22 +365,49 @@ class TaskQueue:
 
         :return:
         """
+        self._requeue_expired_leases()
         self._expire_tasks()
         self._discard_tasks()
 
-    def append(self, payload: Any, priority: int = 0) -> None:
+    def append(self,
+               payload: Any,
+               priority: int = 0,
+               delay_seconds: int = 0,
+               scheduled_at: Optional[float] = None,
+               dedupe_key: Optional[str] = None,
+               rate_limit_key: Optional[str] = None) -> bool:
         """
         Inserts a Task into the TaskQueue.
 
         :param payload: Task payload
         :param priority: Task priority
+        :param delay_seconds: delay in seconds before task can be leased
+        :param scheduled_at: absolute timestamp when task can be leased
+        :param dedupe_key: optional idempotency key
+        :param rate_limit_key: optional rate limit key
         :return:
         """
-        insert_result = self.collection.insert_one(
-            document=Task(priority=priority, payload=payload),
+        if delay_seconds < 0:
+            raise ValueError('delay_seconds must be >= 0')
+        if scheduled_at is not None and delay_seconds:
+            raise ValueError('use delay_seconds or scheduled_at, not both')
+        scheduled_at = scheduled_at or None
+        if delay_seconds:
+            scheduled_at = self._now_timestamp() + delay_seconds
+        task = Task(
+            priority=priority,
+            payload=payload,
+            scheduledAt=scheduled_at,
+            dedupeKey=dedupe_key,
+            rateLimitKey=rate_limit_key,
         )
+        try:
+            insert_result = self.collection.insert_one(document=task)
+        except DuplicateKeyError:
+            return False
         if not insert_result.acknowledged:
             raise InvalidOperation
+        return True
 
     def pop(self) -> Task:
         """
@@ -306,18 +460,36 @@ class TaskQueue:
 
         :return: the next Task at the front of the TaskQueue
         """
+        if not self._acquire_rate_limit():
+            return None
+        now = self._now_timestamp()
+        lease_id = uuid.uuid4().hex
+        lease_expires_at = None
+        if self.visibility_timeout:
+            lease_expires_at = now + self.visibility_timeout
         doc = self.collection.find_one_and_update(
             filter={'assignedTo': None,
                     'status': STATUS_NEW,
-                    'retries': {'$lt': self.max_retries}},
+                    'retries': {'$lt': self.max_retries},
+                    '$or': [{'scheduledAt': {'$exists': False}},
+                            {'scheduledAt': {'$lte': now}},
+                            {'scheduledAt': None}]},
             update={'$set': {'assignedTo': self.assignment_tag,
-                             'modifiedAt': datetime.datetime.now().timestamp(),
+                             'leaseId': lease_id,
+                             'leaseExpiresAt': lease_expires_at,
+                             'modifiedAt': now,
                              'status': STATUS_PENDING}},
             sort=[('priority', DESCENDING),
                   ('createdAt', ASCENDING)],
             return_document=ReturnDocument.AFTER,
         )
-        return self._wrap_task(doc)
+        task = self._wrap_task(doc)
+        if task is None:
+            return None
+        if task.rateLimitKey and not self._acquire_rate_limit(task.rateLimitKey):
+            self._release_task(task, delay_seconds=1.0 / self.rate_limit_per_second)
+            return None
+        return task
 
     def next_many(self, count: int = 0):
         if count < 0:
@@ -369,11 +541,7 @@ class TaskQueue:
         print(f'{self.size():,} Task(s) available in the TaskQueue')
 
     def status_info(self) -> None:
-        cur = self.collection.aggregate([{
-            '$group': {'_id': '$status',
-                       'count': {'$sum': 1}}
-        }])
-        stats = {c['_id']: c['count'] for c in cur}
+        stats = self.status_counts()
         total = sum(stats.values())
         m_len = len(str(total))
         padding = m_len + m_len // 3
@@ -388,6 +556,13 @@ class TaskQueue:
             print(f'{status}'.ljust(15), f'{count:,}'.rjust(padding))
         print()
         print(f'Total:'.ljust(15), f'{total:,}'.rjust(padding))
+
+    def status_counts(self) -> Dict[str, int]:
+        cur = self.collection.aggregate([{
+            '$group': {'_id': '$status',
+                       'count': {'$sum': 1}}
+        }])
+        return {c['_id']: c['count'] for c in cur}
 
     def delete_iter(self, tasks: List[Task]):
         delete_result = self.collection.delete_many(
@@ -437,40 +612,130 @@ class TaskQueue:
         :return:
         """
         task.assignedTo = None
+        task.leaseId = None
+        task.leaseExpiresAt = None
         task.modifiedAt = datetime.datetime.now().timestamp()
         task.status = STATUS_SUCCESSFUL
+        task.scheduledAt = None
         self.update(task)
 
-    def on_failure(self, task: Task, error_message: str = None) -> None:
+    def on_failure(self,
+                   task: Task,
+                   error_message: str = None,
+                   retry: bool = True) -> None:
         """
         Task execution resulted in failure.
 
         :param task: the failed Task
         :param error_message: the error message to be stored with the Task
+        :param retry: whether to retry with backoff if configured
         :return:
         """
         task.assignedTo = None
+        task.leaseId = None
+        task.leaseExpiresAt = None
         task.modifiedAt = datetime.datetime.now().timestamp()
-        task.status = STATUS_FAILED
         task.errorMessage = error_message
         task.retries += 1
+        delay = self._compute_backoff(task.retries) if retry else 0.0
+        if retry and delay and task.retries < self.max_retries:
+            task.status = STATUS_NEW
+            task.scheduledAt = self._now_timestamp() + delay
+        else:
+            task.status = STATUS_FAILED
+            task.scheduledAt = None
         self.update(task)
 
-    def on_retry(self, task: Task) -> None:
+    def on_retry(self, task: Task, delay_seconds: int = 0) -> None:
         """
         Task is released and its state gets updated.
 
         :param task: the Task that needs to be retried.
+        :param delay_seconds: optional delay before requeue
         :return:
         """
+        if delay_seconds < 0:
+            raise ValueError('delay_seconds must be >= 0')
+        scheduled_at = None
+        if delay_seconds:
+            scheduled_at = self._now_timestamp() + delay_seconds
         return self.collection.find_one_and_update(
             filter={'_id': task.object_id_,
                     'assignedTo': self.assignment_tag},
             update={'$set': {'assignedTo': None,
+                             'leaseId': None,
+                             'leaseExpiresAt': None,
+                             'scheduledAt': scheduled_at,
                              'modifiedAt': datetime.datetime.now().timestamp(),
                              'status': STATUS_NEW},
                     '$inc': {'retries': 1}}
         )
+
+    def heartbeat(self, task: Task, extend_by: Optional[int] = None) -> Optional[Task]:
+        """
+        Extends the lease for an assigned task.
+
+        :param task: the Task to extend lease for
+        :param extend_by: seconds to extend; defaults to visibility_timeout
+        :return: updated Task or None
+        """
+        if self.visibility_timeout <= 0:
+            return None
+        extension = extend_by if extend_by is not None else self.visibility_timeout
+        if extension <= 0:
+            raise ValueError('extend_by must be > 0')
+        now = self._now_timestamp()
+        lease_expires_at = now + extension
+        doc = self.collection.find_one_and_update(
+            filter={'_id': task.object_id_,
+                    'assignedTo': self.assignment_tag,
+                    'status': STATUS_PENDING},
+            update={'$set': {'leaseExpiresAt': lease_expires_at,
+                             'modifiedAt': now}},
+            return_document=ReturnDocument.AFTER,
+        )
+        return self._wrap_task(doc)
+
+    def requeue_failed(self, delay_seconds: int = 0) -> int:
+        """
+        Requeues failed tasks that are still within retry limits.
+
+        :param delay_seconds: optional delay before requeue
+        :return: number of tasks requeued
+        """
+        if delay_seconds < 0:
+            raise ValueError('delay_seconds must be >= 0')
+        scheduled_at = None
+        if delay_seconds:
+            scheduled_at = self._now_timestamp() + delay_seconds
+        update_result = self.collection.update_many(
+            filter={'status': STATUS_FAILED,
+                    'retries': {'$lt': self.max_retries}},
+            update={'$set': {'status': STATUS_NEW,
+                             'assignedTo': None,
+                             'leaseId': None,
+                             'leaseExpiresAt': None,
+                             'scheduledAt': scheduled_at,
+                             'modifiedAt': self._now_timestamp()}},
+        )
+        if not update_result.acknowledged:
+            raise InvalidOperation
+        return update_result.modified_count
+
+    def purge(self, status: Optional[str] = None) -> int:
+        """
+        Purges tasks by status or all tasks when status is None.
+
+        :param status: optional status to filter
+        :return: number of deleted tasks
+        """
+        filter_predicate: Dict[str, Any] = {}
+        if status is not None:
+            filter_predicate['status'] = status
+        delete_result = self.collection.delete_many(filter_predicate)
+        if not delete_result.acknowledged:
+            raise InvalidOperation
+        return delete_result.deleted_count
 
     def create_index(self) -> str:
         """
@@ -478,12 +743,42 @@ class TaskQueue:
 
         :return: name of the created index
         """
-        return self.collection.create_index(
+        primary_index = self.collection.create_index(
             keys=[('_id', ASCENDING),
                   ('assignedTo', ASCENDING),
                   ('modifiedAt', ASCENDING)],
             background=True,
         )
+        self.collection.create_index(
+            keys=[('status', ASCENDING),
+                  ('assignedTo', ASCENDING),
+                  ('scheduledAt', ASCENDING),
+                  ('priority', DESCENDING),
+                  ('createdAt', ASCENDING)],
+            background=True,
+        )
+        self.collection.create_index(
+            keys=[('leaseExpiresAt', ASCENDING)],
+            background=True,
+        )
+        self.collection.create_index(
+            keys=[('status', ASCENDING),
+                  ('retries', DESCENDING)],
+            background=True,
+        )
+        self.collection.create_index(
+            keys=[('dedupeKey', ASCENDING)],
+            unique=True,
+            partialFilterExpression={'dedupeKey': {'$exists': True},
+                                     'status': {'$ne': STATUS_SUCCESSFUL}},
+            background=True,
+        )
+        if self.dead_letter_collection is not None:
+            self.dead_letter_collection.create_index(
+                keys=[('discardedAt', ASCENDING)],
+                background=True,
+            )
+        return primary_index
 
     @staticmethod
     def _wrap_task(doc: Union[Mapping, MutableMapping]) -> Union[Task, None]:
@@ -519,8 +814,22 @@ class TaskQueue:
         if not delete_result.acknowledged:
             raise InvalidOperation
 
-    def append_many(self, payloads: Iterable[Any], priority: int = 0) -> None:
-        tasks = [Task(priority=priority, payload=payload) for payload in payloads]
+    def append_many(self,
+                    payloads: Iterable[Any],
+                    priority: int = 0,
+                    delay_seconds: int = 0,
+                    scheduled_at: Optional[float] = None) -> None:
+        if delay_seconds < 0:
+            raise ValueError('delay_seconds must be >= 0')
+        if scheduled_at is not None and delay_seconds:
+            raise ValueError('use delay_seconds or scheduled_at, not both')
+        scheduled_at = scheduled_at or None
+        if delay_seconds:
+            scheduled_at = self._now_timestamp() + delay_seconds
+        tasks = [
+            Task(priority=priority, payload=payload, scheduledAt=scheduled_at)
+            for payload in payloads
+        ]
         self.bulk_append(tasks)
 
     def close(self) -> None:
@@ -530,6 +839,8 @@ class TaskQueue:
         self._mongo_client = None
         self.__dict__.pop('database', None)
         self.__dict__.pop('collection', None)
+        self.__dict__.pop('meta_collection', None)
+        self.__dict__.pop('dead_letter_collection', None)
 
     def __enter__(self):
         return self
