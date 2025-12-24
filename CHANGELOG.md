@@ -5,6 +5,9 @@ All notable changes to this project are documented in this file.
 ## Unreleased
 - TBD
 
+## 0.3.1
+- Removed license classifier for PEP 639 compatibility.
+
 ## 0.3.0
 - Added delayed enqueue, leases/heartbeats, backoff, and rate limiting.
 - Added dead-letter support and async queue (optional extra).
