@@ -242,7 +242,7 @@ class TestTaskQueueIntegration(unittest.TestCase):
             collection_name=f"{self.queue.collection_name}_rate",
             host=MONGO_URI,
             ttl=-1,
-            rate_limit_per_second=0.5,
+            rate_limit_per_second=0.1,
         )
         queue.append({"job": "rate-1"})
         queue.append({"job": "rate-2"})
@@ -257,7 +257,7 @@ class TestTaskQueueIntegration(unittest.TestCase):
             collection_name=f"{self.queue.collection_name}_ratekey",
             host=MONGO_URI,
             ttl=-1,
-            rate_limit_per_second=0.5,
+            rate_limit_per_second=0.1,
         )
         queue.append({"job": "rate-key-1"}, rate_limit_key="alpha")
         queue.append({"job": "rate-key-2"}, rate_limit_key="alpha")
