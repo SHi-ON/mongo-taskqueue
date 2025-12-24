@@ -4,7 +4,9 @@ import os
 import sys
 from typing import Any, Dict, Optional
 
-from mongotq import get_task_queue
+from bson.objectid import ObjectId
+
+from mongotq import Task, get_task_queue
 
 DEFAULT_TTL = -1
 
@@ -60,6 +62,12 @@ def _build_queue(args: argparse.Namespace):
         discard_strategy=args.discard_strategy,
         client_options=client_options,
         ensure_indexes=not args.no_indexes,
+        visibility_timeout=args.visibility_timeout,
+        retry_backoff_base=args.retry_backoff_base,
+        retry_backoff_max=args.retry_backoff_max,
+        dead_letter_collection=args.dead_letter_collection,
+        meta_collection=args.meta_collection,
+        rate_limit_per_second=args.rate_limit_per_second,
     )
 
 
@@ -72,6 +80,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--tag", help="Assignment tag")
     parser.add_argument("--max-retries", type=int, default=3)
     parser.add_argument("--discard-strategy", default="keep")
+    parser.add_argument("--visibility-timeout", type=int, default=0)
+    parser.add_argument("--retry-backoff-base", type=int, default=0)
+    parser.add_argument("--retry-backoff-max", type=int, default=0)
+    parser.add_argument("--dead-letter-collection")
+    parser.add_argument("--meta-collection")
+    parser.add_argument("--rate-limit-per-second", type=float)
     parser.add_argument(
         "--client-options",
         help="JSON object of MongoClient options",
@@ -87,6 +101,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     append_parser = subparsers.add_parser("append", help="Append a task")
     append_parser.add_argument("payload", help="JSON payload or string")
     append_parser.add_argument("--priority", type=int, default=0)
+    append_parser.add_argument("--delay-seconds", type=int, default=0)
+    append_parser.add_argument("--scheduled-at", type=float)
+    append_parser.add_argument("--dedupe-key")
+    append_parser.add_argument("--rate-limit-key")
 
     subparsers.add_parser("refresh", help="Expire and discard tasks")
     subparsers.add_parser("size", help="Print queue size")
@@ -101,6 +119,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     subparsers.add_parser("next", help="Fetch next task")
     subparsers.add_parser("pop", help="Pop a successful task")
 
+    requeue_parser = subparsers.add_parser("requeue-failed", help="Requeue failed tasks")
+    requeue_parser.add_argument("--delay-seconds", type=int, default=0)
+
+    purge_parser = subparsers.add_parser("purge", help="Purge tasks")
+    purge_parser.add_argument("--status")
+
+    heartbeat_parser = subparsers.add_parser("heartbeat", help="Extend task lease")
+    heartbeat_parser.add_argument("task_id")
+    heartbeat_parser.add_argument("--extend-by", type=int)
+
+    subparsers.add_parser("dead-letter-count", help="Print dead-letter count")
+
     resolve_parser = subparsers.add_parser(
         "resolve-anomalies", help="Resolve lifecycle anomalies"
     )
@@ -114,7 +144,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     queue = _build_queue(args)
 
     if args.command == "append":
-        queue.append(_parse_payload(args.payload), priority=args.priority)
+        inserted = queue.append(
+            _parse_payload(args.payload),
+            priority=args.priority,
+            delay_seconds=args.delay_seconds,
+            scheduled_at=args.scheduled_at,
+            dedupe_key=args.dedupe_key,
+            rate_limit_key=args.rate_limit_key,
+        )
+        if not inserted:
+            print("Duplicate task skipped")
         return 0
     if args.command == "refresh":
         queue.refresh()
@@ -138,6 +177,29 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.command == "pop":
         task = queue.pop()
         print(task if task is not None else "No task available")
+        return 0
+    if args.command == "requeue-failed":
+        count = queue.requeue_failed(delay_seconds=args.delay_seconds)
+        print(count)
+        return 0
+    if args.command == "purge":
+        count = queue.purge(status=args.status)
+        print(count)
+        return 0
+    if args.command == "heartbeat":
+        try:
+            task_id = ObjectId(args.task_id)
+        except Exception as exc:
+            raise SystemExit(f"Invalid task id: {exc}") from exc
+        task = Task(_id=task_id)
+        updated = queue.heartbeat(task, extend_by=args.extend_by)
+        print(updated if updated is not None else "No task updated")
+        return 0
+    if args.command == "dead-letter-count":
+        if queue.dead_letter_collection is None:
+            print(0)
+        else:
+            print(queue.dead_letter_collection.count_documents({}))
         return 0
     if args.command == "resolve-anomalies":
         queue.resolve_anomalies(dry_run=not args.apply)
