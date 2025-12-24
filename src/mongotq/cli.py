@@ -119,7 +119,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     subparsers.add_parser("next", help="Fetch next task")
     subparsers.add_parser("pop", help="Pop a successful task")
 
-    requeue_parser = subparsers.add_parser("requeue-failed", help="Requeue failed tasks")
+    requeue_parser = subparsers.add_parser(
+        "requeue-failed",
+        help="Requeue failed tasks",
+    )
     requeue_parser.add_argument("--delay-seconds", type=int, default=0)
 
     purge_parser = subparsers.add_parser("purge", help="Purge tasks")

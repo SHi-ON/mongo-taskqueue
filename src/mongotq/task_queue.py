@@ -6,17 +6,22 @@ import uuid
 from collections.abc import Mapping, MutableMapping
 from functools import cached_property
 from pprint import pprint
-from typing import Any, Dict, Iterable, Generator, List, Optional, Union
+from typing import Any, cast, Dict, Generator, Iterable, List, Optional, Union
 
-from pymongo import MongoClient, ASCENDING, DESCENDING
+from pymongo import ASCENDING, DESCENDING, MongoClient
 from pymongo.collection import Collection, ReturnDocument
 from pymongo.database import Database
 from pymongo.errors import DuplicateKeyError, InvalidOperation
 from pymongo.read_preferences import ReadPreference
 
 from mongotq.anomalies import NonPendingAssignedAnomaly
-from mongotq.task  import Task, STATUS_NEW, STATUS_PENDING, \
-                   STATUS_FAILED, STATUS_SUCCESSFUL
+from mongotq.task import (
+    STATUS_FAILED,
+    STATUS_NEW,
+    STATUS_PENDING,
+    STATUS_SUCCESSFUL,
+    Task,
+)
 
 
 def get_mongo_client(mongo_host: Union[str, List[str]],
@@ -46,7 +51,7 @@ class TaskQueue:
             database: str,
             collection: str,
             host: Union[str, List[str]],
-            tag: str = None,
+            tag: Optional[str] = None,
             ttl: int = -1,
             max_retries: int = 3,
             discard_strategy: str = 'keep',
@@ -119,7 +124,7 @@ class TaskQueue:
         self.meta_collection_name = meta_collection or f'{collection}_meta'
         self.rate_limit_per_second = rate_limit_per_second
 
-        self._mongo_client = None
+        self._mongo_client: Optional[MongoClient] = None
 
     def __repr__(self):
         return f'TaskQueue collection name: {self.collection_name}'
@@ -195,9 +200,10 @@ class TaskQueue:
             raise InvalidOperation
 
     def _acquire_rate_limit(self, key: Optional[str] = None) -> bool:
-        if self.rate_limit_per_second is None:
+        rate_limit = self.rate_limit_per_second
+        if rate_limit is None:
             return True
-        interval = 1.0 / self.rate_limit_per_second
+        interval = 1.0 / rate_limit
         now = time.time()
         meta_id = 'rate_limit' if key is None else f'rate_limit:{key}'
         doc = self.meta_collection.find_one({'_id': meta_id})
@@ -391,7 +397,6 @@ class TaskQueue:
             raise ValueError('delay_seconds must be >= 0')
         if scheduled_at is not None and delay_seconds:
             raise ValueError('use delay_seconds or scheduled_at, not both')
-        scheduled_at = scheduled_at or None
         if delay_seconds:
             scheduled_at = self._now_timestamp() + delay_seconds
         task = Task(
@@ -409,7 +414,7 @@ class TaskQueue:
             raise InvalidOperation
         return True
 
-    def pop(self) -> Task:
+    def pop(self) -> Optional[Task]:
         """
         Removes a completed Task from the TaskQueue and returns it. The removed
         Task must be in `STATUS_SUCCESSFUL` status.
@@ -453,7 +458,7 @@ class TaskQueue:
         if update_result.upserted_id:
             logging.debug('Task upserted!')
 
-    def next(self) -> Union[Task, None]:
+    def next(self) -> Optional[Task]:
         """
         Gets the next unassigned Task from the TaskQueue and returns
         a wrapped `Task` object of it.
@@ -486,15 +491,17 @@ class TaskQueue:
         task = self._wrap_task(doc)
         if task is None:
             return None
-        if task.rateLimitKey and not self._acquire_rate_limit(task.rateLimitKey):
-            self._release_task(task, delay_seconds=1.0 / self.rate_limit_per_second)
-            return None
+        rate_limit = self.rate_limit_per_second
+        if task.rateLimitKey and rate_limit is not None:
+            if not self._acquire_rate_limit(task.rateLimitKey):
+                self._release_task(task, delay_seconds=1.0 / rate_limit)
+                return None
         return task
 
-    def next_many(self, count: int = 0):
+    def next_many(self, count: int = 0) -> List[Task]:
         if count < 0:
             raise ValueError('count must be >= 0')
-        tasks = []
+        tasks: List[Task] = []
         while count == 0 or len(tasks) < count:
             task = self.next()
             if task is None:
@@ -619,10 +626,12 @@ class TaskQueue:
         task.scheduledAt = None
         self.update(task)
 
-    def on_failure(self,
-                   task: Task,
-                   error_message: str = None,
-                   retry: bool = True) -> None:
+    def on_failure(
+        self,
+        task: Task,
+        error_message: Optional[str] = None,
+        retry: bool = True,
+    ) -> None:
         """
         Task execution resulted in failure.
 
@@ -646,7 +655,11 @@ class TaskQueue:
             task.scheduledAt = None
         self.update(task)
 
-    def on_retry(self, task: Task, delay_seconds: int = 0) -> None:
+    def on_retry(
+        self,
+        task: Task,
+        delay_seconds: int = 0,
+    ) -> Optional[Mapping[str, Any]]:
         """
         Task is released and its state gets updated.
 
@@ -659,7 +672,7 @@ class TaskQueue:
         scheduled_at = None
         if delay_seconds:
             scheduled_at = self._now_timestamp() + delay_seconds
-        return self.collection.find_one_and_update(
+        doc = self.collection.find_one_and_update(
             filter={'_id': task.object_id_,
                     'assignedTo': self.assignment_tag},
             update={'$set': {'assignedTo': None,
@@ -670,8 +683,13 @@ class TaskQueue:
                              'status': STATUS_NEW},
                     '$inc': {'retries': 1}}
         )
+        return cast(Optional[Mapping[str, Any]], doc)
 
-    def heartbeat(self, task: Task, extend_by: Optional[int] = None) -> Optional[Task]:
+    def heartbeat(
+        self,
+        task: Task,
+        extend_by: Optional[int] = None,
+    ) -> Optional[Task]:
         """
         Extends the lease for an assigned task.
 
@@ -769,8 +787,14 @@ class TaskQueue:
         self.collection.create_index(
             keys=[('dedupeKey', ASCENDING)],
             unique=True,
-            partialFilterExpression={'dedupeKey': {'$exists': True},
-                                     'status': {'$ne': STATUS_SUCCESSFUL}},
+            partialFilterExpression={
+                'dedupeKey': {'$exists': True},
+                '$or': [
+                    {'status': STATUS_NEW},
+                    {'status': STATUS_PENDING},
+                    {'status': STATUS_FAILED},
+                ],
+            },
             background=True,
         )
         if self.dead_letter_collection is not None:
@@ -781,7 +805,7 @@ class TaskQueue:
         return primary_index
 
     @staticmethod
-    def _wrap_task(doc: Union[Mapping, MutableMapping]) -> Union[Task, None]:
+    def _wrap_task(doc: Optional[Mapping[str, Any]]) -> Optional[Task]:
         """
         Creates a Task object from the given document mapping.
 
@@ -823,7 +847,6 @@ class TaskQueue:
             raise ValueError('delay_seconds must be >= 0')
         if scheduled_at is not None and delay_seconds:
             raise ValueError('use delay_seconds or scheduled_at, not both')
-        scheduled_at = scheduled_at or None
         if delay_seconds:
             scheduled_at = self._now_timestamp() + delay_seconds
         tasks = [

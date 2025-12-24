@@ -1,7 +1,7 @@
 import datetime
 import pprint
 from collections.abc import MutableMapping
-from typing import Iterator, Any
+from typing import Any, Iterator, Optional
 
 from bson.objectid import ObjectId
 
@@ -19,21 +19,23 @@ class Task(MutableMapping):
     pertaining to a certain job.
     """
 
-    def __init__(self,
-                 _id: ObjectId = None,
-                 assignedTo: str = None,
-                 createdAt: float = None,
-                 modifiedAt: float = None,
-                 scheduledAt: float = None,
-                 leaseId: str = None,
-                 leaseExpiresAt: float = None,
-                 status: str = None,
-                 errorMessage: str = None,
-                 retries: int = 0,
-                 priority: int = 0,
-                 payload: Any = None,
-                 dedupeKey: str = None,
-                 rateLimitKey: str = None):
+    def __init__(
+        self,
+        _id: Optional[ObjectId] = None,
+        assignedTo: Optional[str] = None,
+        createdAt: Optional[float] = None,
+        modifiedAt: Optional[float] = None,
+        scheduledAt: Optional[float] = None,
+        leaseId: Optional[str] = None,
+        leaseExpiresAt: Optional[float] = None,
+        status: Optional[str] = None,
+        errorMessage: Optional[str] = None,
+        retries: int = 0,
+        priority: int = 0,
+        payload: Any = None,
+        dedupeKey: Optional[str] = None,
+        rateLimitKey: Optional[str] = None,
+    ):
         """
         Instantiates a Task instance.
 

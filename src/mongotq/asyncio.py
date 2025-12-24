@@ -8,7 +8,13 @@ from pymongo.collection import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 from pymongo.read_preferences import ReadPreference
 
-from mongotq.task import Task, STATUS_FAILED, STATUS_NEW, STATUS_PENDING, STATUS_SUCCESSFUL
+from mongotq.task import (
+    STATUS_FAILED,
+    STATUS_NEW,
+    STATUS_PENDING,
+    STATUS_SUCCESSFUL,
+    Task,
+)
 
 try:
     from motor.motor_asyncio import AsyncIOMotorClient
@@ -22,7 +28,7 @@ class AsyncTaskQueue:
         database: str,
         collection: str,
         host: Union[str, List[str]],
-        tag: str = None,
+        tag: Optional[str] = None,
         ttl: int = -1,
         max_retries: int = 3,
         discard_strategy: str = "keep",
@@ -65,7 +71,7 @@ class AsyncTaskQueue:
         self.meta_collection_name = meta_collection or f"{collection}_meta"
         self.rate_limit_per_second = rate_limit_per_second
 
-        self._mongo_client = None
+        self._mongo_client: Optional[AsyncIOMotorClient] = None
 
     def _get_mongo_client(self) -> AsyncIOMotorClient:
         if self._mongo_client is None:
@@ -116,7 +122,11 @@ class AsyncTaskQueue:
         if delay_seconds:
             scheduled_at = self._now_timestamp() + delay_seconds
         await self.collection.update_one(
-            {"_id": task.object_id_, "assignedTo": self.assignment_tag, "status": STATUS_PENDING},
+            {
+                "_id": task.object_id_,
+                "assignedTo": self.assignment_tag,
+                "status": STATUS_PENDING,
+            },
             {
                 "$set": {
                     "assignedTo": None,
@@ -130,9 +140,10 @@ class AsyncTaskQueue:
         )
 
     async def _acquire_rate_limit(self, key: Optional[str] = None) -> bool:
-        if self.rate_limit_per_second is None:
+        rate_limit = self.rate_limit_per_second
+        if rate_limit is None:
             return True
-        interval = 1.0 / self.rate_limit_per_second
+        interval = 1.0 / rate_limit
         now = time.time()
         meta_id = "rate_limit" if key is None else f"rate_limit:{key}"
         doc = await self.meta_collection.find_one({"_id": meta_id})
@@ -157,7 +168,6 @@ class AsyncTaskQueue:
             raise ValueError("delay_seconds must be >= 0")
         if scheduled_at is not None and delay_seconds:
             raise ValueError("use delay_seconds or scheduled_at, not both")
-        scheduled_at = scheduled_at or None
         if delay_seconds:
             scheduled_at = self._now_timestamp() + delay_seconds
         task = Task(
@@ -184,7 +194,6 @@ class AsyncTaskQueue:
             raise ValueError("delay_seconds must be >= 0")
         if scheduled_at is not None and delay_seconds:
             raise ValueError("use delay_seconds or scheduled_at, not both")
-        scheduled_at = scheduled_at or None
         if delay_seconds:
             scheduled_at = self._now_timestamp() + delay_seconds
         tasks = [
@@ -229,9 +238,11 @@ class AsyncTaskQueue:
         task = Task(**doc) if doc else None
         if task is None:
             return None
-        if task.rateLimitKey and not await self._acquire_rate_limit(task.rateLimitKey):
-            await self._release_task(task, delay_seconds=1.0 / self.rate_limit_per_second)
-            return None
+        rate_limit = self.rate_limit_per_second
+        if task.rateLimitKey and rate_limit is not None:
+            if not await self._acquire_rate_limit(task.rateLimitKey):
+                await self._release_task(task, delay_seconds=1.0 / rate_limit)
+                return None
         return task
 
     async def on_success(self, task: Task) -> None:
@@ -245,7 +256,11 @@ class AsyncTaskQueue:
             {"_id": task.object_id_}, {"$set": dict(task)}
         )
 
-    async def on_failure(self, task: Task, error_message: str = None) -> None:
+    async def on_failure(
+        self,
+        task: Task,
+        error_message: Optional[str] = None,
+    ) -> None:
         task.assignedTo = None
         task.leaseId = None
         task.leaseExpiresAt = None
@@ -329,7 +344,9 @@ class AsyncTaskQueue:
             for doc in docs:
                 doc["discardedAt"] = timestamp
             await self.dead_letter_collection.insert_many(docs)
-            await self.collection.delete_many({"_id": {"$in": [doc["_id"] for doc in docs]}})
+            await self.collection.delete_many(
+                {"_id": {"$in": [doc["_id"] for doc in docs]}}
+            )
         else:
             await self.collection.delete_many(filter_predicate)
 
@@ -357,7 +374,11 @@ class AsyncTaskQueue:
             unique=True,
             partialFilterExpression={
                 "dedupeKey": {"$exists": True},
-                "status": {"$ne": STATUS_SUCCESSFUL},
+                "$or": [
+                    {"status": STATUS_NEW},
+                    {"status": STATUS_PENDING},
+                    {"status": STATUS_FAILED},
+                ],
             },
             background=True,
         )
