@@ -5,6 +5,9 @@ All notable changes to this project are documented in this file.
 ## Unreleased
 - TBD
 
+## 1.0.2
+- Updated project URLs and documentation link in package metadata.
+
 ## 1.0.1
 - Updated README for PyPI and documentation links.
 
