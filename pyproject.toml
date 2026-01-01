@@ -4,7 +4,7 @@ build-backend = 'setuptools.build_meta'
 
 [project]
 name = 'mongo-taskqueue'
-version = '1.0.1'
+version = '1.0.2'
 description = 'Queueing data structure on top of a MongoDB collection'
 readme = 'README.md'
 license = 'MIT'
@@ -43,10 +43,11 @@ async = [
 ]
 
 [project.urls]
-Homepage = 'https://github.com/mms-analytics/mongo-taskqueue'
-Repository = 'https://github.com/mms-analytics/mongo-taskqueue'
-Issues = 'https://github.com/mms-analytics/mongo-taskqueue/issues'
-Changelog = 'https://github.com/mms-analytics/mongo-taskqueue/blob/main/CHANGELOG.md'
+Homepage = 'https://github.com/SHi-ON/mongo-taskqueue'
+Repository = 'https://github.com/SHi-ON/mongo-taskqueue'
+Issues = 'https://github.com/SHi-ON/mongo-taskqueue/issues'
+Changelog = 'https://github.com/SHi-ON/mongo-taskqueue/blob/main/CHANGELOG.md'
+Documentation = 'https://shi-on.github.io/mongo-taskqueue/'
 
 [project.scripts]
 mongotq = 'mongotq.cli:main'
