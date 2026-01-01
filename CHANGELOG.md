@@ -5,6 +5,9 @@ All notable changes to this project are documented in this file.
 ## Unreleased
 - TBD
 
+## 1.0.1
+- Updated README for PyPI and documentation links.
+
 ## 1.0.0
 - Fixed dedupe index filtering to ignore null dedupe keys.
 - Ensured rate-limited tasks reschedule with a delay.
