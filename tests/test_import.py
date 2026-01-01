@@ -18,9 +18,7 @@ class TestImport(unittest.TestCase):
 
     def test_import_classes(self):
         import mongotq
-        from mongotq import NonPendingAssignedAnomaly
-        from mongotq import TaskQueue
-        from mongotq import Task
+        from mongotq import NonPendingAssignedAnomaly, Task, TaskQueue
 
         self.assertIsNotNone(NonPendingAssignedAnomaly)
         self.assertIsNotNone(TaskQueue)
@@ -28,8 +26,12 @@ class TestImport(unittest.TestCase):
         self.assertTrue(hasattr(mongotq, "AsyncTaskQueue"))
 
     def test_import_attributes(self):
-        from mongotq import STATUS_NEW, STATUS_PENDING, STATUS_FAILED, \
-            STATUS_SUCCESSFUL
+        from mongotq import (
+            STATUS_FAILED,
+            STATUS_NEW,
+            STATUS_PENDING,
+            STATUS_SUCCESSFUL,
+        )
 
         self.assertIsNotNone(STATUS_NEW)
         self.assertIsNotNone(STATUS_PENDING)

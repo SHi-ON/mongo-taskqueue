@@ -6,7 +6,7 @@ import uuid
 from collections.abc import Mapping, MutableMapping
 from functools import cached_property
 from pprint import pprint
-from typing import Any, cast, Dict, Generator, Iterable, List, Optional, Union
+from typing import Any, Dict, Generator, Iterable, List, Optional, Union, cast
 
 from pymongo import ASCENDING, DESCENDING, MongoClient
 from pymongo.collection import Collection, ReturnDocument
@@ -465,8 +465,6 @@ class TaskQueue:
 
         :return: the next Task at the front of the TaskQueue
         """
-        if not self._acquire_rate_limit():
-            return None
         now = self._now_timestamp()
         lease_id = uuid.uuid4().hex
         lease_expires_at = None
@@ -492,8 +490,11 @@ class TaskQueue:
         if task is None:
             return None
         rate_limit = self.rate_limit_per_second
-        if task.rateLimitKey and rate_limit is not None:
-            if not self._acquire_rate_limit(task.rateLimitKey):
+        if rate_limit is not None:
+            if not self._acquire_rate_limit():
+                self._release_task(task, delay_seconds=1.0 / rate_limit)
+                return None
+            if task.rateLimitKey and not self._acquire_rate_limit(task.rateLimitKey):
                 self._release_task(task, delay_seconds=1.0 / rate_limit)
                 return None
         return task
@@ -557,12 +558,12 @@ class TaskQueue:
             logging.warning('task counts changed during aggregation')
 
         print('Tasks status:')
-        print(f'Status'.ljust(15), 'Count'.ljust(padding))
+        print('Status'.ljust(15), 'Count'.ljust(padding))
         print(f'{"-" * 10}'.ljust(15), f'{"-" * padding}'.ljust(padding))
         for status, count in sorted(stats.items()):
             print(f'{status}'.ljust(15), f'{count:,}'.rjust(padding))
         print()
-        print(f'Total:'.ljust(15), f'{total:,}'.rjust(padding))
+        print('Total:'.ljust(15), f'{total:,}'.rjust(padding))
 
     def status_counts(self) -> Dict[str, int]:
         cur = self.collection.aggregate([{
@@ -788,7 +789,7 @@ class TaskQueue:
             keys=[('dedupeKey', ASCENDING)],
             unique=True,
             partialFilterExpression={
-                'dedupeKey': {'$exists': True},
+                'dedupeKey': {'$exists': True, '$ne': None},
                 '$or': [
                     {'status': STATUS_NEW},
                     {'status': STATUS_PENDING},
