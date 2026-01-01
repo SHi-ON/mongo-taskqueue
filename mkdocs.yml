@@ -1,0 +1,46 @@
+site_name: mongo-taskqueue
+site_description: Queueing data structure on top of a MongoDB collection
+site_url: https://SHi-ON.github.io/mongo-taskqueue/
+repo_url: https://github.com/SHi-ON/mongo-taskqueue
+repo_name: SHi-ON/mongo-taskqueue
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - codehilite
+  - fenced_code
+  - tables
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Configuration: configuration.md
+  - Core Concepts:
+      - Task Model: task-model.md
+      - Task Lifecycle: task-lifecycle.md
+      - Scheduling: scheduling.md
+      - Retries and Backoff: retries-backoff.md
+      - Dedupe Keys: dedupe.md
+      - Rate Limiting: rate-limiting.md
+      - Dead Letter: dead-letter.md
+  - Usage:
+      - Sync API: sync-api.md
+      - Async API: async.md
+      - CLI: cli.md
+  - Operations: operations.md
+  - Troubleshooting: troubleshooting.md
+  - FAQ: faq.md
