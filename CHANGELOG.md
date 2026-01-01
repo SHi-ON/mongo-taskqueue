@@ -5,6 +5,11 @@ All notable changes to this project are documented in this file.
 ## Unreleased
 - TBD
 
+## 1.0.0
+- Fixed dedupe index filtering to ignore null dedupe keys.
+- Ensured rate-limited tasks reschedule with a delay.
+- Improved AsyncTaskQueue export typing.
+
 ## 0.3.1
 - Removed license classifier for PEP 639 compatibility.
 
