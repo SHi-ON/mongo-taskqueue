@@ -1,5 +1,12 @@
 # mongo-taskqueue
 
+[![PyPI](https://img.shields.io/pypi/v/mongo-taskqueue.svg)](https://pypi.org/project/mongo-taskqueue/)
+[![Python Versions](https://img.shields.io/pypi/pyversions/mongo-taskqueue.svg)](https://pypi.org/project/mongo-taskqueue/)
+[![Downloads](https://img.shields.io/pypi/dm/mongo-taskqueue.svg)](https://pypistats.org/packages/mongo-taskqueue)
+[![CI](https://github.com/SHi-ON/mongo-taskqueue/actions/workflows/ci.yml/badge.svg)](https://github.com/SHi-ON/mongo-taskqueue/actions/workflows/ci.yml)
+[![Docs](https://github.com/SHi-ON/mongo-taskqueue/actions/workflows/docs.yml/badge.svg)](https://shi-on.github.io/mongo-taskqueue/)
+[![License](https://img.shields.io/pypi/l/mongo-taskqueue.svg)](https://github.com/SHi-ON/mongo-taskqueue/blob/main/LICENSE)
+
 Queueing data structure on top of a MongoDB collection.
 
 ## Overview
