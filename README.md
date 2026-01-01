@@ -1,152 +1,159 @@
-# Mongo TaskQueue
-[![Python 3.9](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://pypi.org/project/mongo-taskqueue)
-[![PyPI version](https://badge.fury.io/py/mongo-taskqueue.svg)](https://badge.fury.io/py/mongo-taskqueue)
-![MongoDB](https://img.shields.io/badge/MongoDB-%234ea94b.svg?style=flat&logo=mongodb&logoColor=white)
+# mongo-taskqueue
 
-Mongo-TaskQueue is a queueing data structure built on top of a MongoDB 
-collection.
+Queueing data structure on top of a MongoDB collection.
+
+## Overview
+mongo-taskqueue stores tasks in a single MongoDB collection and exposes a small
+API for enqueueing, leasing, and completing work. It is designed for simple
+worker loops that need scheduling, retries, and deduplication without an extra
+queue service.
+
+## Features
+- Single-collection queue with priority ordering
+- Delayed enqueue and scheduled execution
+- Visibility timeouts with optional heartbeat extension
+- Retry tracking with optional exponential backoff
+- Dedupe keys (string) to avoid duplicate in-flight tasks
+- Global and per-key rate limiting
+- Dead-letter collection for discarded tasks
+- Sync and async APIs
+- CLI for common operations
+
+## Install
+```bash
+pip install mongo-taskqueue
+```
+
+Async support:
+```bash
+pip install "mongo-taskqueue[async]"
+```
 
 ## Quick start
-Just create an instance of TaskQueue and start to append to your queue:
 ```python
->>> from mongotq import get_task_queue
+from mongotq import get_task_queue
 
->>> task_queue = get_task_queue(
-        database_name=YOUR_MONGO_DATABASE_NAME,
-        collection_name='queueGeocoding',
-        host=YOUR_MONGO_DB_URI,
-        ttl=-1  # permanent queue
-    )
->>> task_queue.append({'species': 'Great Horned Owl'})
->>> task_queue.append({'species': 'Eastern Screech Owl'})
->>> task_queue.append({'species': 'Northern Saw-whet Owl'})
->>> task_queue.append({'species': 'Snowy Owl'})
->>> task_queue.append({'species': 'Whiskered Screech Owl'})
+queue = get_task_queue(
+    database_name="app",
+    collection_name="jobs",
+    host="mongodb://localhost:27017",
+    ttl=-1,
+)
+
+queue.append({"job": "email", "to": "alice"})
+
+task = queue.next()
+if task:
+    try:
+        # do work
+        queue.on_success(task)
+    except Exception as exc:
+        queue.on_failure(task, error_message=str(exc))
 ```
 
-Then you can simply check the tail of your queue:
+## Configuration
+`get_task_queue(...)` accepts:
+- `ttl`: seconds a pending task can live before being marked failed (`-1` for
+  no expiry)
+- `max_retries`: maximum failure count before discard
+- `discard_strategy`: `keep` or `remove`
+- `visibility_timeout`: lease duration for pending tasks
+- `retry_backoff_base` and `retry_backoff_max`: exponential backoff controls
+- `dead_letter_collection`: where discarded tasks are copied when using
+  `discard_strategy="remove"`
+- `meta_collection`: metadata collection for rate limits
+- `rate_limit_per_second`: global and per-key dequeue limits
+- `ensure_indexes`: create indexes if missing
+
+## Task lifecycle
+Statuses are available as constants:
+`STATUS_NEW`, `STATUS_PENDING`, `STATUS_FAILED`, `STATUS_SUCCESSFUL`.
+
+Common transitions:
+- `next()` leases the next available task and marks it `pending`
+- `on_success(task)` marks it `successful`
+- `on_failure(task)` increments retries and may reschedule or fail
+- `on_retry(task)` releases a leased task back to `new`
+- `refresh()` requeues expired leases, expires pending tasks (TTL), and
+  discards tasks over retry limits
+
+## Delayed tasks
 ```python
->>> task_queue.tail(n=5)
-```
-```python
-{'_id': ObjectId('6392375588c63227371c693c'),
- 'assignedTo': None,
- 'createdAt': datetime.datetime(2022, 12, 8, 14, 13, 25, 99685),
- 'errorMessage': None,
- 'modifiedAt': datetime.datetime(2022, 12, 8, 14, 13, 25, 99685),
- 'payload': {'species': 'Great Horned Owl'},
- 'priority': 0,
- 'retries': 0,
- 'status': 'new'}
-{'_id': ObjectId('6392375588c63227371c693d'),
- 'assignedTo': None,
- 'createdAt': datetime.datetime(2022, 12, 8, 14, 13, 25, 129570),
- 'errorMessage': None,
- 'modifiedAt': datetime.datetime(2022, 12, 8, 14, 13, 25, 129570),
- 'payload': {'species': 'Eastern Screech Owl'},
- 'priority': 0,
- 'retries': 0,
- 'status': 'new'}
-{'_id': ObjectId('6392375588c63227371c693e'),
- 'assignedTo': None,
- 'createdAt': datetime.datetime(2022, 12, 8, 14, 13, 25, 155404),
- 'errorMessage': None,
- 'modifiedAt': datetime.datetime(2022, 12, 8, 14, 13, 25, 155404),
- 'payload': {'species': 'Northern Saw-whet Owl'},
- 'priority': 0,
- 'retries': 0,
- 'status': 'new'}
-{'_id': ObjectId('6392375588c63227371c693f'),
- 'assignedTo': None,
- 'createdAt': datetime.datetime(2022, 12, 8, 14, 13, 25, 179804),
- 'errorMessage': None,
- 'modifiedAt': datetime.datetime(2022, 12, 8, 14, 13, 25, 179804),
- 'payload': {'species': 'Snowy Owl'},
- 'priority': 0,
- 'retries': 0,
- 'status': 'new'}
-{'_id': ObjectId('6392375588c63227371c6940'),
- 'assignedTo': None,
- 'createdAt': datetime.datetime(2022, 12, 8, 14, 13, 25, 204284),
- 'errorMessage': None,
- 'modifiedAt': datetime.datetime(2022, 12, 8, 14, 13, 25, 204284),
- 'payload': {'species': 'Whiskered Screech Owl'},
- 'priority': 0,
- 'retries': 0,
- 'status': 'new'}
-5 Task(s) available in the TaskQueue
+queue.append({"job": "later"}, delay_seconds=30)
+queue.append({"job": "at-time"}, scheduled_at=1710000000.0)
 ```
 
+## Dedupe keys
+Dedupe keys are indexed for string values only.
+```python
+queue.append({"job": "once"}, dedupe_key="job-123")
+```
+Duplicate inserts return `False`.
 
-## Installation
-The only dependency is [pyMongo](https://pymongo.readthedocs.io/en/stable/).
-The easiest way to install Mongo-TaskQueue is using `uv`:
-```shell
-uv pip install mongo-taskqueue
+## Rate limiting
+Set `rate_limit_per_second` to throttle dequeue frequency. When a task has a
+`rateLimitKey`, the per-key limit is enforced in addition to the global limit.
+If a per-key limit is hit after a task is leased, the task is released and
+scheduled slightly in the future.
+
+## Dead-letter collection
+```python
+queue = get_task_queue(
+    database_name="app",
+    collection_name="jobs",
+    host="mongodb://localhost:27017",
+    ttl=-1,
+    max_retries=1,
+    discard_strategy="remove",
+    dead_letter_collection="jobs_dead",
+)
+```
+Discarded tasks are copied to the dead-letter collection during `refresh()`.
+
+## Async usage
+```python
+from mongotq import AsyncTaskQueue
+
+queue = AsyncTaskQueue(
+    database="app",
+    collection="jobs",
+    host="mongodb://localhost:27017",
+    ttl=-1,
+)
+
+await queue.append({"job": "async"})
+
+task = await queue.next()
+if task:
+    await queue.on_success(task)
 ```
 
 ## CLI
-Use the `mongotq` CLI to inspect or update a queue:
-```shell
-mongotq --host mongodb://localhost:27017 --database mydb --collection myqueue size
-mongotq --host mongodb://localhost:27017 --database mydb --collection myqueue append '{"job": "hello"}'
-mongotq --host mongodb://localhost:27017 --database mydb --collection myqueue next
-mongotq --host mongodb://localhost:27017 --database mydb --collection myqueue append '{"job": "later"}' --delay-seconds 30
-mongotq --host mongodb://localhost:27017 --database mydb --collection myqueue requeue-failed --delay-seconds 10
-mongotq --host mongodb://localhost:27017 --database mydb --collection myqueue dead-letter-count
-```
+The CLI is installed as `mongotq`.
 
 Environment variables:
-- `MONGOTQ_HOST` or `MONGO_URI`
+- `MONGOTQ_HOST` (or `MONGO_URI`)
 - `MONGOTQ_DATABASE`
 - `MONGOTQ_COLLECTION`
 - `MONGOTQ_TTL`
-- `MONGOTQ_TAG`
 
-Examples are available in `examples/producer.py` and `examples/worker.py`.
-
-## Runtime behavior
-- `ttl` controls how long a task may remain in `pending` state before it is
-  released and marked as `failed`.
-- `visibility_timeout` controls how long a task lease lasts before it is
-  requeued for another worker.
-- `retry_backoff_base` and `retry_backoff_max` control exponential backoff when
-  `on_failure` is called.
-- `max_retries` caps how many failed attempts a task can have.
-- `discard_strategy` can be `keep` or `remove`.
-- `client_options` may be passed to `get_task_queue` to configure `MongoClient`.
-- `dead_letter_collection` moves discarded tasks into another collection.
-- `rate_limit_per_second` limits dequeue frequency (global and per-key).
-  Rate limiting uses a companion metadata collection.
-
-## Idempotent enqueue
-Use `dedupe_key` with `append` to avoid duplicate tasks:
-```python
-task_queue.append({"job": 1}, dedupe_key="job-1")
+Example:
+```bash
+mongotq \
+  --host mongodb://localhost:27017 \
+  --database app \
+  --collection jobs \
+  append '{"job": "email"}'
 ```
 
-## Delayed tasks
-Schedule a task for later execution:
-```python
-task_queue.append({"job": "later"}, delay_seconds=30)
-```
+Common commands:
+- `append`, `next`, `pop`, `refresh`, `size`, `status`
+- `head`, `tail`, `purge`, `requeue-failed`
+- `heartbeat`, `dead-letter-count`, `resolve-anomalies`
 
-## Async usage
-Install the async extra and use `AsyncTaskQueue`:
-```shell
-uv pip install "mongo-taskqueue[async]"
-```
-```python
-from mongotq import AsyncTaskQueue
-```
+## Testing
+Tests are designed to run in GitHub Actions. Local runs are skipped unless
+`GITHUB_ACTIONS=true` is set.
 
-## Testing (CI only)
-Tests are designed to run only in GitHub Actions. Local test runs are skipped.
-
-## GitHub Actions
-All tests run in GitHub Actions via Docker Compose. Lint, type checks, and
-package validation also run in CI.
-
-## Release
-Tag a release as `vX.Y.Z` to trigger the publish workflow. The workflow uses
-`PYPI_TOKEN` from GitHub Secrets.
+## License
+MIT. See `LICENSE`.
