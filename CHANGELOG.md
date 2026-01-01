@@ -5,6 +5,9 @@ All notable changes to this project are documented in this file.
 ## Unreleased
 - TBD
 
+## 1.0.4
+- Refreshed `uv.lock` after the 1.0.3 version bump to keep locked installs green.
+
 ## 1.0.3
 - Added README badges for PyPI, downloads, and CI/documentation status.
 
