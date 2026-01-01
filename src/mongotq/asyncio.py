@@ -373,7 +373,7 @@ class AsyncTaskQueue:
             [("dedupeKey", 1)],
             unique=True,
             partialFilterExpression={
-                "dedupeKey": {"$exists": True},
+                "dedupeKey": {"$type": "string"},
                 "$or": [
                     {"status": STATUS_NEW},
                     {"status": STATUS_PENDING},

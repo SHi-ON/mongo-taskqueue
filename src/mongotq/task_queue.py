@@ -789,7 +789,7 @@ class TaskQueue:
             keys=[('dedupeKey', ASCENDING)],
             unique=True,
             partialFilterExpression={
-                'dedupeKey': {'$exists': True, '$ne': None},
+                'dedupeKey': {'$type': 'string'},
                 '$or': [
                     {'status': STATUS_NEW},
                     {'status': STATUS_PENDING},
