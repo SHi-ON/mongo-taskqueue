@@ -26,4 +26,5 @@ jobs:
       - name: Build
         run: uv build
       - name: Publish to PyPI
+        if: startsWith(github.ref, 'refs/tags/v')
         run: uv publish --trusted-publishing=automatic
